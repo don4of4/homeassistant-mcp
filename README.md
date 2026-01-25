@@ -140,7 +140,7 @@ See [SSE_API.md](docs/SSE_API.md) for complete documentation of the SSE system.
 
 ```bash
 # Clone the repository
-git clone https://github.com/jango-blockchained/homeassistant-mcp.git
+git clone https://github.com/tevonsb/homeassistant-mcp.git
 cd homeassistant-mcp
 
 # Install dependencies
@@ -156,7 +156,7 @@ The project includes Docker support for easy deployment and consistent environme
 
 1. **Clone the repository:**
     ```bash
-    git clone https://github.com/jango-blockchained/homeassistant-mcp.git
+    git clone https://github.com/tevonsb/homeassistant-mcp.git
     cd homeassistant-mcp
     ```
 
