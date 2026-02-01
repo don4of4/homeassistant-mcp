@@ -27,6 +27,7 @@ const HASS_HOST = process.env.HASS_HOST || 'http://192.168.178.63:8123';
 const HASS_TOKEN = process.env.HASS_TOKEN;  // Internal: Server → Home Assistant communication
 const MCP_API_KEY = process.env.MCP_API_KEY; // External: Client → MCP Server authentication
 const PORT = process.env.PORT || 8124;
+const DISABLE_HTTP_SERVER = process.env.DISABLE_HTTP_SERVER === 'true';
 
 // Validate required environment variables
 if (!HASS_TOKEN) {
@@ -1133,7 +1134,14 @@ async function main() {
               throw new Error('Configuration is required for creating automation');
             }
 
-            const response = await fetch(`${HASS_HOST}/api/config/automation/config`, {
+            // Generate automation ID from alias if not provided
+            // HA API requires the ID in the URL path
+            const automationId = params.automation_id || params.config.alias
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, '_')
+              .replace(/^_|_$/g, '');
+
+            const response = await fetch(`${HASS_HOST}/api/config/automation/config/${automationId}`, {
               method: 'POST',
               headers: {
                 Authorization: `Bearer ${HASS_TOKEN}`,
@@ -1146,11 +1154,11 @@ async function main() {
               throw new Error(`Failed to create automation: ${response.statusText}`);
             }
 
-            const responseData = await response.json() as { automation_id: string };
+            // HA API only returns {"result": "ok"}, not the automation_id
             return {
               success: true,
               message: 'Successfully created automation',
-              automation_id: responseData.automation_id,
+              automation_id: automationId,
             };
           }
 
@@ -1159,8 +1167,9 @@ async function main() {
               throw new Error('Automation ID and configuration are required for updating automation');
             }
 
+            // HA API uses POST for both create and update
             const response = await fetch(`${HASS_HOST}/api/config/automation/config/${params.automation_id}`, {
-              method: 'PUT',
+              method: 'POST',
               headers: {
                 Authorization: `Bearer ${HASS_TOKEN}`,
                 'Content-Type': 'application/json',
@@ -1172,10 +1181,10 @@ async function main() {
               throw new Error(`Failed to update automation: ${response.statusText}`);
             }
 
-            const responseData = await response.json() as { automation_id: string };
+            // HA API only returns {"result": "ok"}, not the automation_id
             return {
               success: true,
-              automation_id: responseData.automation_id,
+              automation_id: params.automation_id,
               message: 'Automation updated successfully'
             };
           }
@@ -1223,8 +1232,14 @@ async function main() {
             const config = await getResponse.json() as AutomationConfig;
             config.alias = `${config.alias} (Copy)`;
 
+            // Generate new automation ID from the new alias
+            const newAutomationId = config.alias
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, '_')
+              .replace(/^_|_$/g, '');
+
             // Create new automation with modified config
-            const createResponse = await fetch(`${HASS_HOST}/api/config/automation/config`, {
+            const createResponse = await fetch(`${HASS_HOST}/api/config/automation/config/${newAutomationId}`, {
               method: 'POST',
               headers: {
                 Authorization: `Bearer ${HASS_TOKEN}`,
@@ -1237,11 +1252,11 @@ async function main() {
               throw new Error(`Failed to create duplicate automation: ${createResponse.statusText}`);
             }
 
-            const newAutomation = await createResponse.json() as AutomationResponse;
+            // HA API only returns {"result": "ok"}, not the automation_id
             return {
               success: true,
               message: `Successfully duplicated automation ${params.automation_id}`,
-              new_automation_id: newAutomation.automation_id,
+              new_automation_id: newAutomationId,
             };
           }
         }
@@ -1392,10 +1407,14 @@ async function main() {
   // Log successful initialization
   logger.info('[server:init]', '\nServer initialization complete. Ready to handle requests.');
 
-  // Start the Express server
-  app.listen(PORT, () => {
-    logger.info('[server:init]', `Express server listening on port ${PORT}`);
-  });
+  // Start the Express server (optional - can be disabled for MCP-only mode)
+  if (!DISABLE_HTTP_SERVER) {
+    app.listen(PORT, () => {
+      logger.info('[server:init]', `Express server listening on port ${PORT}`);
+    });
+  } else {
+    logger.info('[server:init]', 'HTTP server disabled (DISABLE_HTTP_SERVER=true). Running in MCP-only mode.');
+  }
 }
 
 main().catch(console.error);
