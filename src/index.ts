@@ -24,8 +24,27 @@ import { DomainSchema } from './schemas.js';
 
 // Configuration
 const HASS_HOST = process.env.HASS_HOST || 'http://192.168.178.63:8123';
-const HASS_TOKEN = process.env.HASS_TOKEN;
-const PORT = process.env.PORT || 3000;
+const HASS_TOKEN = process.env.HASS_TOKEN;  // Internal: Server → Home Assistant communication
+const MCP_API_KEY = process.env.MCP_API_KEY; // External: Client → MCP Server authentication
+const PORT = process.env.PORT || 8124;
+
+// Validate required environment variables
+if (!HASS_TOKEN) {
+  console.error('FATAL: HASS_TOKEN is required for Home Assistant communication');
+  console.error('Get a Long-Lived Access Token from Home Assistant: Profile → Long-Lived Access Tokens');
+  process.exit(1);
+}
+if (!MCP_API_KEY) {
+  console.error('FATAL: MCP_API_KEY is required for client authentication');
+  console.error('Generate one with: openssl rand -base64 32');
+  process.exit(1);
+}
+
+// Client authentication helper - validates MCP_API_KEY (NOT HASS_TOKEN)
+function validateClientToken(token: string | undefined): boolean {
+  if (!token || !MCP_API_KEY) return false;
+  return token === MCP_API_KEY;
+}
 
 console.log('Initializing Home Assistant connection...');
 
@@ -68,10 +87,10 @@ app.get('/list_devices', async (req, res) => {
     // Get token from Authorization header
     const token = req.headers.authorization?.replace('Bearer ', '');
 
-    if (!token || token !== HASS_TOKEN) {
+    if (!validateClientToken(token)) {
       return res.status(401).json({
         success: false,
-        message: 'Unauthorized - Invalid token'
+        message: 'Unauthorized - Invalid API key'
       });
     }
 
@@ -98,10 +117,10 @@ app.post('/control', async (req, res) => {
     // Get token from Authorization header
     const token = req.headers.authorization?.replace('Bearer ', '');
 
-    if (!token || token !== HASS_TOKEN) {
+    if (!validateClientToken(token)) {
       return res.status(401).json({
         success: false,
-        message: 'Unauthorized - Invalid token'
+        message: 'Unauthorized - Invalid API key'
       });
     }
 
@@ -132,10 +151,10 @@ app.get('/subscribe_events', (req, res) => {
     // Get token from query parameter
     const token = req.query.token?.toString();
 
-    if (!token || token !== HASS_TOKEN) {
+    if (!validateClientToken(token)) {
       return res.status(401).json({
         success: false,
-        message: 'Unauthorized - Invalid token'
+        message: 'Unauthorized - Invalid API key'
       });
     }
 
@@ -167,10 +186,10 @@ app.get('/get_sse_stats', async (req, res) => {
     // Get token from query parameter
     const token = req.query.token?.toString();
 
-    if (!token || token !== HASS_TOKEN) {
+    if (!validateClientToken(token)) {
       return res.status(401).json({
         success: false,
-        message: 'Unauthorized - Invalid token'
+        message: 'Unauthorized - Invalid API key'
       });
     }
 
@@ -188,6 +207,112 @@ app.get('/get_sse_stats', async (req, res) => {
     res.status(500).json({
       success: false,
       message: error instanceof Error ? error.message : 'Unknown error occurred'
+    });
+  }
+});
+
+// ============================================================================
+// MCP-over-HTTP Endpoint (Streamable HTTP Transport)
+// Allows Claude Code and other HTTP-based MCP clients to connect
+// ============================================================================
+app.post('/mcp', async (req, res) => {
+  try {
+    // Authenticate using MCP_API_KEY
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!validateClientToken(token)) {
+      return res.status(401).json({
+        jsonrpc: '2.0',
+        id: req.body?.id || null,
+        error: { code: -32000, message: 'Unauthorized - Invalid API key' }
+      });
+    }
+
+    const { jsonrpc, id, method, params } = req.body;
+
+    // Validate JSON-RPC version
+    if (jsonrpc !== '2.0') {
+      return res.status(400).json({
+        jsonrpc: '2.0',
+        id,
+        error: { code: -32600, message: 'Invalid JSON-RPC version' }
+      });
+    }
+
+    let result;
+    switch (method) {
+      case 'initialize':
+        result = {
+          protocolVersion: '2024-11-05',
+          serverInfo: { name: 'home-assistant', version: '0.1.0' },
+          capabilities: { tools: {} }
+        };
+        break;
+
+      case 'tools/list':
+        result = {
+          tools: tools.map(t => ({
+            name: t.name,
+            description: t.description,
+            inputSchema: {
+              type: 'object',
+              properties: {},
+              // Note: Full schema conversion would require zod-to-json-schema
+              // For now, clients can discover parameters through tool execution
+            }
+          }))
+        };
+        break;
+
+      case 'tools/call':
+        const toolName = params?.name;
+        const tool = tools.find(t => t.name === toolName);
+        if (!tool) {
+          return res.status(404).json({
+            jsonrpc: '2.0',
+            id,
+            error: { code: -32601, message: `Tool not found: ${toolName}` }
+          });
+        }
+        try {
+          const toolResult = await tool.execute(params?.arguments || {});
+          result = {
+            content: [{ type: 'text', text: JSON.stringify(toolResult, null, 2) }]
+          };
+        } catch (toolError) {
+          return res.status(500).json({
+            jsonrpc: '2.0',
+            id,
+            error: {
+              code: -32603,
+              message: `Tool execution failed: ${toolError instanceof Error ? toolError.message : 'Unknown error'}`
+            }
+          });
+        }
+        break;
+
+      case 'notifications/initialized':
+        // Client notification that initialization is complete - acknowledge silently
+        result = {};
+        break;
+
+      default:
+        return res.status(400).json({
+          jsonrpc: '2.0',
+          id,
+          error: { code: -32601, message: `Method not found: ${method}` }
+        });
+    }
+
+    res.json({ jsonrpc: '2.0', id, result });
+  } catch (error) {
+    console.error('MCP endpoint error:', error);
+    res.status(500).json({
+      jsonrpc: '2.0',
+      id: req.body?.id || null,
+      error: {
+        code: -32603,
+        message: error instanceof Error ? error.message : 'Internal error'
+      }
     });
   }
 });
