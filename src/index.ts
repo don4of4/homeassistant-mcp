@@ -17,6 +17,15 @@ const envFile = process.env.NODE_ENV === 'production'
 console.log(`Loading environment from ${envFile}`);
 config({ path: resolve(process.cwd(), envFile) });
 
+// Sync env vars: support both HASS_HOST (documented) and HASS_BASE_URL (library expects)
+// Must happen before importing hass module which triggers library initialization
+if (process.env.HASS_HOST && !process.env.HASS_BASE_URL) {
+  process.env.HASS_BASE_URL = process.env.HASS_HOST;
+}
+if (process.env.HASS_BASE_URL && !process.env.HASS_HOST) {
+  process.env.HASS_HOST = process.env.HASS_BASE_URL;
+}
+
 import { get_hass } from './hass/index.js';
 import { LiteMCP } from 'litemcp';
 import { z } from 'zod';
